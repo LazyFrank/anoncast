@@ -5,6 +5,7 @@ import {
   GetBulkCastsResponse,
   GetCastResponse,
   GetCastsResponse,
+  GetChannelResponse,
   PostCastResponse,
   SubmitHashParams,
 } from './types'
@@ -87,6 +88,12 @@ class NeynarService {
     )
   }
 
+  async getChannel(identifier: string) {
+    return this.makeRequest<GetChannelResponse>(
+      `/farcaster/channel?id=${identifier}&type=id`
+    )
+  }
+
   async getUserCasts(fid: number) {
     return this.makeRequest<GetCastsResponse>(
       `/farcaster/feed/user/casts?limit=150&include_replies=true&fid=${fid}`
@@ -131,6 +138,7 @@ class NeynarService {
       parent_author_fid: parentAuthorFid,
       text: params.text,
       embeds,
+      channel_id: params.channel,
     }
 
     const hash = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex')

@@ -24,7 +24,7 @@ type PromoteState =
 interface PostContextProps {
   deletePost: (hash: string) => Promise<void>
   deleteState: DeleteState
-  promotePost: (hash: string) => Promise<void>
+  promotePost: (hash: string, asReply?: boolean) => Promise<void>
   promoteState: PromoteState
 }
 
@@ -88,11 +88,19 @@ export const PostProvider = ({
         return
       }
 
-      await api.submitAction(
-        ProofType.DELETE_POST,
-        Array.from(proof.proof),
-        proof.publicInputs.map((i) => Array.from(i))
-      )
+      if (process.env.DISABLE_QUEUE) {
+        await api.deletePost(
+          Array.from(proof.proof),
+          proof.publicInputs.map((i) => Array.from(i))
+        )
+      } else {
+        await api.submitAction(
+          ProofType.DELETE_POST,
+          Array.from(proof.proof),
+          proof.publicInputs.map((i) => Array.from(i)),
+          {}
+        )
+      }
 
       setDeleteState({ status: 'idle' })
     } catch (e) {
@@ -101,7 +109,7 @@ export const PostProvider = ({
     }
   }
 
-  const promotePost = async (hash: string) => {
+  const promotePost = async (hash: string, asReply?: boolean) => {
     if (!userAddress) return
 
     setPromoteState({ status: 'signature' })
@@ -136,11 +144,20 @@ export const PostProvider = ({
         return
       }
 
-      await api.submitAction(
-        ProofType.PROMOTE_POST,
-        Array.from(proof.proof),
-        proof.publicInputs.map((i) => Array.from(i))
-      )
+      if (process.env.DISABLE_QUEUE) {
+        await api.promotePost(
+          Array.from(proof.proof),
+          proof.publicInputs.map((i) => Array.from(i)),
+          { asReply }
+        )
+      } else {
+        await api.submitAction(
+          ProofType.PROMOTE_POST,
+          Array.from(proof.proof),
+          proof.publicInputs.map((i) => Array.from(i)),
+          { asReply }
+        )
+      }
 
       setPromoteState({ status: 'idle' })
     } catch (e) {

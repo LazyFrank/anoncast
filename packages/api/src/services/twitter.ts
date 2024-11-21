@@ -1,6 +1,17 @@
-import { SendTweetV2Params, TwitterApi } from 'twitter-api-v2'
+import {
+  ApiResponseError,
+  SendTweetV2Params,
+  TwitterApi,
+  TwitterApiV2Settings,
+} from 'twitter-api-v2'
 import { Cast } from './types'
 import https from 'https'
+import { Redis } from 'ioredis'
+
+TwitterApiV2Settings.debug = true
+
+const redis = new Redis(process.env.REDIS_URL as string)
+
 export const twitterClient = new TwitterApi({
   appKey: process.env.TWITTER_API_KEY as string,
   appSecret: process.env.TWITTER_API_SECRET as string,
@@ -8,17 +19,22 @@ export const twitterClient = new TwitterApi({
   accessSecret: process.env.TWITTER_ACCESS_TOKEN_SECRET as string,
 })
 
-export async function promoteToTwitter(cast: Cast) {
+export async function promoteToTwitter(cast: Cast, asReply?: boolean) {
   const twitterEmbed = cast.embeds?.find(
     (e) => e.url?.includes('x.com') || e.url?.includes('twitter.com')
   )
 
   let quoteTweetId: string | undefined
+  let replyToTweetId: string | undefined
   if (twitterEmbed && twitterEmbed.url) {
     const url = new URL(twitterEmbed.url)
     const tweetId = url.pathname.split('/').pop()
     if (tweetId) {
-      quoteTweetId = tweetId
+      if (asReply) {
+        replyToTweetId = tweetId
+      } else {
+        quoteTweetId = tweetId
+      }
     }
   }
 
@@ -53,60 +69,75 @@ export async function promoteToTwitter(cast: Cast) {
     e.metadata?.content_type?.startsWith('image')
   )?.url
 
-  return await formatAndSubmitToTwitter(text, image, quoteTweetId)
+  return await formatAndSubmitToTwitter(text, image, quoteTweetId, replyToTweetId)
 }
 
 async function formatAndSubmitToTwitter(
   text: string,
   image?: string,
-  quoteTweetId?: string
+  quoteTweetId?: string,
+  replyToTweetId?: string
 ) {
+  let mediaId: string | undefined
+  if (image) {
+    const { data: binaryData, mimeType } = await new Promise<{
+      data: Buffer
+      mimeType: string
+    }>((resolve, reject) => {
+      https
+        .get(image, (res) => {
+          res.setEncoding('binary')
+          let data = Buffer.alloc(0)
+
+          res.on('data', (chunk) => {
+            data = Buffer.concat([data, Buffer.from(chunk, 'binary')])
+          })
+          res.on('end', () => {
+            const mimeType = res.headers['content-type'] || 'image/jpeg'
+            resolve({ data, mimeType })
+          })
+        })
+        .on('error', (e) => {
+          reject(e)
+        })
+    })
+    mediaId = await twitterClient.v1.uploadMedia(binaryData as unknown as Buffer, {
+      mimeType,
+    })
+  }
+
+  const params: SendTweetV2Params = {}
+  if (mediaId) {
+    params.media = {
+      media_ids: [mediaId],
+    }
+  }
+
+  if (quoteTweetId) {
+    params.quote_tweet_id = quoteTweetId
+  }
+  if (replyToTweetId) {
+    params.reply = {
+      in_reply_to_tweet_id: replyToTweetId,
+    }
+  }
+
   try {
-    let mediaId: string | undefined
-    if (image) {
-      const { data: binaryData, mimeType } = await new Promise<{
-        data: Buffer
-        mimeType: string
-      }>((resolve, reject) => {
-        https
-          .get(image, (res) => {
-            res.setEncoding('binary')
-            let data = Buffer.alloc(0)
-
-            res.on('data', (chunk) => {
-              data = Buffer.concat([data, Buffer.from(chunk, 'binary')])
-            })
-            res.on('end', () => {
-              const mimeType = res.headers['content-type'] || 'image/jpeg'
-              resolve({ data, mimeType })
-            })
-          })
-          .on('error', (e) => {
-            reject(e)
-          })
-      })
-      mediaId = await twitterClient.v1.uploadMedia(binaryData as unknown as Buffer, {
-        mimeType,
-      })
-    }
-
-    const params: SendTweetV2Params = {}
-    if (mediaId) {
-      params.media = {
-        media_ids: [mediaId],
-      }
-    }
-
-    if (quoteTweetId) {
-      params.quote_tweet_id = quoteTweetId
-    }
-
     const result = await twitterClient.v2.tweet(text, params)
-
     if (result?.data?.id) {
       return result.data.id
     }
   } catch (e) {
-    console.error(e)
+    if (e instanceof ApiResponseError) {
+      if (e.rateLimit) {
+        await redis.set(
+          'twitter:rate-limit',
+          e.rateLimit.reset,
+          'EXAT',
+          e.rateLimit.reset
+        )
+      }
+    }
+    throw e
   }
 }
